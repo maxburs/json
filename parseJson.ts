@@ -1,109 +1,114 @@
 import assert from "node:assert";
 
-function parseObject(json: string, index: number): [unknown, number] {
-  assert(json[index] === "{");
+interface Ctx {
+  readonly json: string;
+  pos: number;
+}
+
+function unexpectedChar(ctx: Ctx): never {
+  throw new Error(
+    `Unexpected character ${ctx.json[ctx.pos]} at index ${ctx.pos}`
+  );
+}
+
+function parseObject(ctx: Ctx): unknown {
+  assert.equal(ctx.json[ctx.pos], "{");
+  ctx.pos++;
   const result: Record<string, unknown> = {};
-  let end = index + 1;
   while (true) {
-    end = advanceWhitespace(json, end);
-    switch (json[end]) {
-      case "}":
-        return [result, end + 1];
-      case ",": {
-        end++;
-        end = advanceWhitespace(json, end);
-        const [key, keyEnd] = parseString(json, end);
-        end = keyEnd;
-        end = advanceWhitespace(json, end);
-        assert(json[end] === ":");
-        end++;
-        end = advanceWhitespace(json, end);
-        const [value, newEnd] = _parseJson(json, end);
-        result[key] = value;
-        end = newEnd;
-      }
+    skipWhitespace(ctx);
+    if (ctx.json[ctx.pos] === "}") {
+      ctx.pos++;
+      return result;
     }
+    const key = parseString(ctx);
+    skipWhitespace(ctx);
+    assert(ctx.json[ctx.pos] === ":");
+    ctx.pos++;
+    skipWhitespace(ctx);
+    const value = _parseJson(ctx);
+    result[key] = value;
   }
 }
 
-function parseArray(json: string, index: number): [unknown, number] {
-  assert(json[index] === "[");
+function parseArray(ctx: Ctx): unknown {
+  assert.equal(ctx.json[ctx.pos], "[");
   const result = [];
-  let end = index + 1;
+
   while (true) {
-    end = advanceWhitespace(json, end);
-    switch (json[end]) {
+    skipWhitespace(ctx);
+    switch (ctx.json[ctx.pos]) {
       case "]":
-        return [result, end + 1];
+        ctx.pos++;
+        return result;
       case ",":
-        {
-          end++;
-          end = advanceWhitespace(json, end);
-          const [value, newEnd] = _parseJson(json, end);
-          result.push(value);
-          end = newEnd;
-        }
+        ctx.pos++;
+        skipWhitespace(ctx);
+        result.push(_parseJson(ctx));
         break;
+      default:
+        unexpectedChar(ctx);
     }
   }
 }
 
-function parseString(json: string, index: number): [string, number] {
-  assert(json[index] === '"');
-  let end = index + 1;
-  while (json[end] !== '"') {
-    if (json[end] === "\\") {
+function parseString(ctx: Ctx): string {
+  assert.equal(ctx.json[ctx.pos], '"');
+  const start = ctx.pos + 1;
+  ctx.pos++;
+  while (ctx.json[ctx.pos] !== '"') {
+    if (ctx.json[ctx.pos] === "\\") {
       // TODO: Parse escape sequences
-      end++;
-      end++;
+      ctx.pos++;
+      ctx.pos++;
     }
-    end++;
+    ctx.pos++;
   }
-  return [json.slice(index + 1, end), end + 1];
+  const str = ctx.json.slice(start, ctx.pos);
+  ctx.pos++;
+  return str;
 }
 
 // TODO: Parse scientific notation, signs, and decimals
-function parseNumber(json: string, index: number): [number, number] {
-  const start = index;
-  let end = index;
+function parseNumber(ctx: Ctx): number {
+  const start = ctx.pos;
   while (
-    ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"].includes(json[end])
+    ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"].includes(
+      ctx.json[ctx.pos]
+    )
   ) {
-    end++;
+    ctx.pos++;
   }
-  return [Number(json.slice(start, end)), end];
+  const num = Number(ctx.json.slice(start, ctx.pos));
+  ctx.pos++;
+  return num;
 }
 
-function parseLiteral<T>(
-  json: string,
-  index: number,
-  literal: string,
-  value: T
-): [T, number] {
-  if (json.slice(index, index + literal.length) === literal) {
-    return [value, index + literal.length];
+function parseLiteral<T>(ctx: Ctx, literal: string, value: T): T {
+  if (ctx.json.slice(ctx.pos, ctx.pos + literal.length) === literal) {
+    ctx.pos += literal.length;
+    return value;
   }
-  throw new Error(`Unexpected character ${json[index]} at index ${index}`);
+  unexpectedChar(ctx);
 }
 
-function advanceWhitespace(json: string, index: number): number {
-  while ([" ", "\t", "\n", "\r"].includes(json[index])) {
-    index++;
+function skipWhitespace(ctx: Ctx) {
+  while ([" ", "\t", "\n", "\r"].includes(ctx.json[ctx.pos])) {
+    ctx.pos++;
   }
-  return index;
 }
 
-function _parseJson(json: string, index: number): [unknown, number] {
-  index = advanceWhitespace(json, index);
+function _parseJson(ctx: Ctx): unknown {
+  skipWhitespace(ctx);
 
-  const char = json[index];
+  const char = ctx.json[ctx.pos];
   switch (char) {
     case "{":
-      return parseObject(json, index);
+      return parseObject(ctx);
     case "[":
-      return parseArray(json, index);
+      return parseArray(ctx);
     case '"':
-      return parseString(json, index);
+      return parseString(ctx);
     case "0":
     case "1":
     case "2":
@@ -114,22 +119,22 @@ function _parseJson(json: string, index: number): [unknown, number] {
     case "7":
     case "8":
     case "9":
-      return parseNumber(json, index);
+      return parseNumber(ctx);
     case "t":
-      return parseLiteral(json, index, "true", true);
+      return parseLiteral(ctx, "true", true);
     case "f":
-      return parseLiteral(json, index, "false", false);
+      return parseLiteral(ctx, "false", false);
     case "n":
-      return parseLiteral(json, index, "null", null);
+      return parseLiteral(ctx, "null", null);
     default:
-      throw new Error(`Unexpected character ${char} at index ${index}`);
+      unexpectedChar(ctx);
   }
 }
 
 export function parseJson(json: string): unknown {
-  let [result, end] = _parseJson(json, 0);
-  end = advanceWhitespace(json, end);
-  console.log(end, json.length);
-  assert(end === json.length);
+  const ctx: Ctx = { json, pos: 0 };
+  const result = _parseJson(ctx);
+  skipWhitespace(ctx);
+  assert.equal(ctx.pos, json.length);
   return result;
 }
